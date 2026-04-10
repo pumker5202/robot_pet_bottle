@@ -1,0 +1,19 @@
+# 라즈베리파이 (ARM, CPU 전용) — 앱 의존성 버전은 requirements.txt와 동일하게 맞추고,
+# torch/torchvision 만 아래 중 하나로 설치하세요.
+#
+# 방법 A: 공식 휠 (aarch64, OS에 따라 다름)
+#   https://pytorch.org/get-started/locally/
+#
+# 방법 B: piwheels (Raspberry Pi OS)
+#   pip3 install torch torchvision --extra-index-url https://www.piwheels.org/simple
+#   (호환 버전 확인: https://www.piwheels.org/project/torch/)
+#
+# torch를 먼저 설치한 뒤:
+numpy==1.24.4
+pillow==10.4.0
+PyYAML==5.3.1
+requests==2.32.4
+opencv-python-headless==4.10.0.84
+ultralytics==8.4.21
+flask==3.0.3
+roboflow==1.2.16

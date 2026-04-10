@@ -1,0 +1,15 @@
+# 개발 PC(x86_64)에서 검증한 버전 (Python 3.8+)
+# 라즈베리파이는 README의「라즈베리파이」절 참고 — torch는 별도 휠 사용
+
+numpy==1.24.4
+pillow==10.4.0
+PyYAML==5.3.1
+requests==2.32.4
+opencv-python-headless==4.10.0.84
+
+torch==2.4.1
+torchvision==0.19.1
+
+ultralytics==8.4.21
+flask==3.0.3
+roboflow==1.2.16
