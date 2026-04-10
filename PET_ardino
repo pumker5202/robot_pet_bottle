@@ -1,0 +1,148 @@
+#include <Wire.h>
+#include <AFMotor.h>
+#include <math.h>
+
+#define SLAVE_ADDR 0x08
+
+AF_DCMotor motor_1(1);
+AF_DCMotor motor_2(2);
+AF_DCMotor motor_3(3);
+AF_DCMotor motor_4(4);
+
+volatile char lastCmd = 'S';
+volatile uint32_t lastCmdMs = 0;
+
+// odom (open-loop estimate)
+float x_m = 0.0f;
+float y_m = 0.0f;
+float th_rad = 0.0f;
+uint32_t lastOdomMs = 0;
+
+const float V_FWD = 0.20f;          // m/s
+const float W_TURN = 1.00f;         // rad/s
+const uint32_t CMD_TIMEOUT_MS = 250;
+
+// 함수 원형
+void receiveEvent(int howMany);
+void requestEvent();
+void integrateOdom(uint32_t nowMs);
+
+void allForward();
+void startTurnLeft();
+void startTurnRight();
+void allBackward();
+void allStop();
+void setAllSpeed(int s);
+
+void setup() {
+  Wire.begin(SLAVE_ADDR);
+  Wire.onReceive(receiveEvent);
+  Wire.onRequest(requestEvent);
+
+  Serial.begin(9600);
+  setAllSpeed(200);
+  allStop();
+
+  lastCmd = 'S';
+  lastCmdMs = millis();
+  lastOdomMs = millis();
+}
+
+void loop() {
+  uint32_t now = millis();
+  integrateOdom(now);
+
+  char command = lastCmd;
+  if (command == 'F') allForward();
+  else if (command == 'L') startTurnLeft();
+  else if (command == 'R') startTurnRight();
+  else if (command == 'B') allBackward();
+  else allStop();
+
+  delay(5);
+}
+
+void receiveEvent(int howMany) {
+  while (Wire.available() > 0) {
+    char c = (char)Wire.read();
+    if (c == 'F' || c == 'L' || c == 'R' || c == 'B' || c == 'S') {
+      lastCmd = c;
+      lastCmdMs = millis();
+    }
+  }
+}
+
+void requestEvent() {
+  int32_t x_mm = (int32_t)(x_m * 1000.0f);
+  int32_t y_mm = (int32_t)(y_m * 1000.0f);
+  int32_t th_mrad = (int32_t)(th_rad * 1000.0f);
+
+  Wire.write((uint8_t*)&x_mm, 4);
+  Wire.write((uint8_t*)&y_mm, 4);
+  Wire.write((uint8_t*)&th_mrad, 4);
+}
+
+void integrateOdom(uint32_t nowMs) {
+  if (lastOdomMs == 0) lastOdomMs = nowMs;
+  float dt = (nowMs - lastOdomMs) / 1000.0f;
+  lastOdomMs = nowMs;
+
+  if ((nowMs - lastCmdMs) > CMD_TIMEOUT_MS) {
+    lastCmd = 'S';
+  }
+
+  float v = 0.0f;
+  float w = 0.0f;
+
+  if (lastCmd == 'F') v = +V_FWD;
+  else if (lastCmd == 'B') v = -V_FWD;
+  else if (lastCmd == 'L') w = +W_TURN;
+  else if (lastCmd == 'R') w = -W_TURN;
+
+  th_rad += w * dt;
+  x_m += v * cos(th_rad) * dt;
+  y_m += v * sin(th_rad) * dt;
+}
+
+// 모터 함수들
+void allForward() {
+  motor_1.run(FORWARD);
+  motor_2.run(FORWARD);
+  motor_3.run(FORWARD);
+  motor_4.run(FORWARD);
+}
+
+void startTurnLeft() {
+  motor_1.run(BACKWARD);
+  motor_4.run(BACKWARD);
+  motor_2.run(FORWARD);
+  motor_3.run(FORWARD);
+}
+
+void startTurnRight() {
+  motor_1.run(FORWARD);
+  motor_4.run(FORWARD);
+  motor_2.run(BACKWARD);
+  motor_3.run(BACKWARD);
+}
+
+void allBackward() {
+  motor_1.run(BACKWARD);
+  motor_2.run(BACKWARD);
+  motor_3.run(BACKWARD);
+  motor_4.run(BACKWARD);
+}
+
+void allStop() {
+  motor_1.run(RELEASE);
+  motor_2.run(RELEASE);
+  motor_3.run(RELEASE);
+  motor_4.run(RELEASE);
+}
+
+void setAllSpeed(int s) {
+  motor_1.setSpeed(s);
+  motor_2.setSpeed(s);
+  motor_3.setSpeed(s);
+  motor_4.setSpeed(s);
+}
