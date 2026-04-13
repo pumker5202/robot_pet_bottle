@@ -1,0 +1,121 @@
+#include <Wire.h>
+#include <AFMotor.h>
+
+#define SLAVE_ADDR 0x08
+
+// --- 초음파 센서 핀 설정 (D17=A3, D16=A2) ---
+const int TRIG = 17; 
+const int ECHO = 16;
+
+// --- 속도 및 거리 설정 ---
+const int SPEED_FORWARD = 250; // 주행 속도
+const int SPEED_TURN    = 180; // 회전 속도 (미세 조정)
+const int DIST_STOP_MIN = 70;  // 70cm보다 가까우면 후진
+const int DIST_STOP_MAX = 100; // 100cm보다 멀면 전진 허용
+
+AF_DCMotor motor_1(1); AF_DCMotor motor_2(2);
+AF_DCMotor motor_3(3); AF_DCMotor motor_4(4);
+
+volatile char lastCmd = 'S';
+volatile uint32_t lastCmdMs = 0;
+
+void setup() {
+  Wire.begin(SLAVE_ADDR);
+  Wire.onReceive(receiveEvent);
+  pinMode(TRIG, OUTPUT);
+  pinMode(ECHO, INPUT);
+  Serial.begin(9600);
+  allStop();
+  lastCmdMs = millis();
+}
+
+long getDistance() {
+  digitalWrite(TRIG, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG, LOW);
+  long duration = pulseIn(ECHO, HIGH, 25000); 
+  if (duration == 0) return 999;
+  return duration * 0.034 / 2;
+}
+
+void loop() {
+  uint32_t now = millis();
+  long distance = getDistance();
+
+  // 안전 장치: 통신 끊기면 정지
+  if ((now - lastCmdMs) > 500) lastCmd = 'S';
+
+  char cmd = lastCmd;
+
+  // --- 거리 기반 주행 제어 로직 ---
+  if (distance < DIST_STOP_MIN) {
+    // 1. 너무 가까움: 강제 후진
+    setAllSpeed(SPEED_FORWARD);
+    allBackward();
+  } 
+  else if (distance > DIST_STOP_MAX) {
+    // 2. 충분히 멂: 라즈베리파이 명령 수행
+    if (cmd == 'F') {
+      setAllSpeed(SPEED_FORWARD);
+      allForward();
+    } 
+    else if (cmd == 'L') {
+      setAllSpeed(SPEED_TURN);
+      startTurnLeft();
+    } 
+    else if (cmd == 'R') {
+      setAllSpeed(SPEED_TURN);
+      startTurnRight();
+    } 
+    else {
+      allStop();
+    }
+  } 
+  else {
+    // 3. 적정 거리 (70~100cm): 정지하여 대기
+    allStop();
+  }
+  delay(10);
+}
+
+void receiveEvent(int howMany) {
+  while (Wire.available() > 0) {
+    char c = (char)Wire.read();
+    if (c == 'F' || c == 'L' || c == 'R' || c == 'B' || c == 'S') {
+      lastCmd = c;
+      lastCmdMs = millis();
+    }
+  }
+}
+
+void setAllSpeed(int s) {
+  motor_1.setSpeed(s); motor_2.setSpeed(s);
+  motor_3.setSpeed(s); motor_4.setSpeed(s);
+}
+
+void allForward() {
+  motor_1.run(FORWARD); motor_2.run(FORWARD);
+  motor_3.run(FORWARD); motor_4.run(FORWARD);
+}
+
+void allBackward() {
+  motor_1.run(BACKWARD); motor_2.run(BACKWARD);
+  motor_3.run(BACKWARD); motor_4.run(BACKWARD);
+}
+
+void startTurnLeft() {
+  motor_1.run(FORWARD); motor_4.run(FORWARD);
+  motor_2.run(BACKWARD); motor_3.run(BACKWARD);
+}
+
+void startTurnRight() {
+  motor_1.run(BACKWARD); motor_4.run(BACKWARD);
+  motor_2.run(FORWARD); motor_3.run(FORWARD);
+}
+
+void allStop() {
+  motor_1.run(RELEASE); motor_2.run(RELEASE);
+  motor_3.run(RELEASE); motor_4.run(RELEASE);
+}
