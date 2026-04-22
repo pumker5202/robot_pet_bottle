@@ -1,83 +1,150 @@
+// Arduino UNO + Adafruit Motor Shield v1
+// I2C slave for Raspberry Pi:
+// - Address: 0x08
+// - Read 16 bytes -> int32 encoder counts [wheel1, wheel2, wheel3, wheel4] little-endian
+// - Write 1 byte command: F/B/L/R/S
+//
+// Wiring requested:
+// - Encoder OUT: wheel1=A0, wheel2=A1, wheel3=A2, wheel4=A3
+// - I2C: SDA=A4, SCL=A5 (also connected to MPU6050 and Raspberry Pi SDA/SCL)
+
 #include <Wire.h>
 #include <AFMotor.h>
 
 #define SLAVE_ADDR 0x08
 
-// --- 초음파 센서 핀 설정 (D17=A3, D16=A2) ---
-const int TRIG = 17; 
+// Encoder input pins
+const uint8_t ENC_PIN_1 = A0;
+const uint8_t ENC_PIN_2 = A1;
+const uint8_t ENC_PIN_3 = A2;
+const uint8_t ENC_PIN_4 = A3;
+
+// Ultrasonic pins
+const int TRIG = 17;
 const int ECHO = 16;
 
-// --- 속도 및 거리 설정 ---
-const int SPEED_FORWARD = 250; // 주행 속도
-const int SPEED_TURN    = 180; // 회전 속도 (미세 조정)
-const int DIST_STOP_MIN = 70;  // 70cm보다 가까우면 후진
-const int DIST_STOP_MAX = 100; // 100cm보다 멀면 전진 허용
+// Drive tuning
+const int SPEED_FORWARD = 250;
+const int SPEED_TURN = 220;
+const int SPEED_BACKWARD = 230;
 
-AF_DCMotor motor_1(1); AF_DCMotor motor_2(2);
-AF_DCMotor motor_3(3); AF_DCMotor motor_4(4);
+// Safety/obstacle tuning
+const uint32_t CMD_TIMEOUT_MS = 1500;
+const int DIST_BLOCK_FWD_CM = 25;
+const int DIST_FORCE_BACK_CM = 15;
+
+AF_DCMotor motor_1(1);
+AF_DCMotor motor_2(2);
+AF_DCMotor motor_3(3);
+AF_DCMotor motor_4(4);
+
+volatile int32_t enc_count_1 = 0;
+volatile int32_t enc_count_2 = 0;
+volatile int32_t enc_count_3 = 0;
+volatile int32_t enc_count_4 = 0;
+
+volatile uint8_t enc_last_1 = 0;
+volatile uint8_t enc_last_2 = 0;
+volatile uint8_t enc_last_3 = 0;
+volatile uint8_t enc_last_4 = 0;
 
 volatile char lastCmd = 'S';
 volatile uint32_t lastCmdMs = 0;
 
+void receiveEvent(int howMany);
+void requestEvent();
+long getDistanceCm();
+void setAllSpeed(int s);
+void allForward();
+void allBackward();
+void startTurnLeft();
+void startTurnRight();
+void allStop();
+void sampleEncoders();
+void writeInt32LE(uint8_t* out, int32_t v);
+
 void setup() {
   Wire.begin(SLAVE_ADDR);
   Wire.onReceive(receiveEvent);
+  Wire.onRequest(requestEvent);
+
+  pinMode(ENC_PIN_1, INPUT_PULLUP);
+  pinMode(ENC_PIN_2, INPUT_PULLUP);
+  pinMode(ENC_PIN_3, INPUT_PULLUP);
+  pinMode(ENC_PIN_4, INPUT_PULLUP);
+
   pinMode(TRIG, OUTPUT);
   pinMode(ECHO, INPUT);
-  Serial.begin(9600);
+
+  Serial.begin(115200);
+  setAllSpeed(SPEED_FORWARD);
   allStop();
   lastCmdMs = millis();
 }
 
-long getDistance() {
-  digitalWrite(TRIG, LOW);
-  delayMicroseconds(2);
-  digitalWrite(TRIG, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(TRIG, LOW);
-  long duration = pulseIn(ECHO, HIGH, 25000); 
-  if (duration == 0) return 999;
-  return duration * 0.034 / 2;
-}
-
 void loop() {
+  sampleEncoders();
+
   uint32_t now = millis();
-  long distance = getDistance();
-
-  // 안전 장치: 통신 끊기면 정지
-  if ((now - lastCmdMs) > 500) lastCmd = 'S';
-
   char cmd = lastCmd;
-
-  // --- 거리 기반 주행 제어 로직 ---
-  if (distance < DIST_STOP_MIN) {
-    // 1. 너무 가까움: 강제 후진
-    setAllSpeed(SPEED_FORWARD);
-    allBackward();
-  } 
-  else if (distance > DIST_STOP_MAX) {
-    // 2. 충분히 멂: 라즈베리파이 명령 수행
-    if (cmd == 'F') {
-      setAllSpeed(SPEED_FORWARD);
-      allForward();
-    } 
-    else if (cmd == 'L') {
-      setAllSpeed(SPEED_TURN);
-      startTurnLeft();
-    } 
-    else if (cmd == 'R') {
-      setAllSpeed(SPEED_TURN);
-      startTurnRight();
-    } 
-    else {
-      allStop();
-    }
-  } 
-  else {
-    // 3. 적정 거리 (70~100cm): 정지하여 대기
-    allStop();
+  if ((now - lastCmdMs) > CMD_TIMEOUT_MS) {
+    cmd = 'S';
+    lastCmd = 'S';
   }
-  delay(10);
+
+  long distance = getDistanceCm();
+  bool obstacleClose = (distance > 0 && distance < DIST_BLOCK_FWD_CM);
+  bool obstacleDanger = (distance > 0 && distance < DIST_FORCE_BACK_CM);
+
+  if (obstacleDanger) {
+    setAllSpeed(SPEED_BACKWARD);
+    allBackward();
+  } else {
+    switch (cmd) {
+      case 'F':
+        if (obstacleClose) {
+          allStop();
+        } else {
+          setAllSpeed(SPEED_FORWARD);
+          allForward();
+        }
+        break;
+      case 'B':
+        setAllSpeed(SPEED_BACKWARD);
+        allBackward();
+        break;
+      case 'L':
+        setAllSpeed(SPEED_TURN);
+        startTurnLeft();
+        break;
+      case 'R':
+        setAllSpeed(SPEED_TURN);
+        startTurnRight();
+        break;
+      default:
+        allStop();
+        break;
+    }
+  }
+
+  static uint32_t lastLog = 0;
+  if (now - lastLog > 200) {
+    Serial.print("cmd=");
+    Serial.print(cmd);
+    Serial.print(" dist=");
+    Serial.print(distance);
+    Serial.print("cm ticks=[");
+    Serial.print(enc_count_1); Serial.print(",");
+    Serial.print(enc_count_2); Serial.print(",");
+    Serial.print(enc_count_3); Serial.print(",");
+    Serial.print(enc_count_4); Serial.print("]");
+    Serial.print(" age=");
+    Serial.print(now - lastCmdMs);
+    Serial.println("ms");
+    lastLog = now;
+  }
+
+  delay(2);
 }
 
 void receiveEvent(int howMany) {
@@ -90,32 +157,103 @@ void receiveEvent(int howMany) {
   }
 }
 
+void requestEvent() {
+  uint8_t buf[16];
+  noInterrupts();
+  int32_t c1 = enc_count_1;
+  int32_t c2 = enc_count_2;
+  int32_t c3 = enc_count_3;
+  int32_t c4 = enc_count_4;
+  interrupts();
+
+  writeInt32LE(&buf[0], c1);
+  writeInt32LE(&buf[4], c2);
+  writeInt32LE(&buf[8], c3);
+  writeInt32LE(&buf[12], c4);
+  Wire.write(buf, sizeof(buf));
+}
+
+void sampleEncoders() {
+  uint8_t s1 = digitalRead(ENC_PIN_1);
+  uint8_t s2 = digitalRead(ENC_PIN_2);
+  uint8_t s3 = digitalRead(ENC_PIN_3);
+  uint8_t s4 = digitalRead(ENC_PIN_4);
+
+  if (s1 != enc_last_1) {
+    enc_last_1 = s1;
+    enc_count_1 += (lastCmd == 'B') ? -1 : 1;
+  }
+  if (s2 != enc_last_2) {
+    enc_last_2 = s2;
+    enc_count_2 += (lastCmd == 'B') ? -1 : 1;
+  }
+  if (s3 != enc_last_3) {
+    enc_last_3 = s3;
+    enc_count_3 += (lastCmd == 'B') ? -1 : 1;
+  }
+  if (s4 != enc_last_4) {
+    enc_last_4 = s4;
+    enc_count_4 += (lastCmd == 'B') ? -1 : 1;
+  }
+}
+
+long getDistanceCm() {
+  digitalWrite(TRIG, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG, LOW);
+
+  long duration = pulseIn(ECHO, HIGH, 25000);
+  if (duration <= 0) return 999;
+  return (long)(duration * 0.034 / 2.0);
+}
+
+void writeInt32LE(uint8_t* out, int32_t v) {
+  out[0] = (uint8_t)(v & 0xFF);
+  out[1] = (uint8_t)((v >> 8) & 0xFF);
+  out[2] = (uint8_t)((v >> 16) & 0xFF);
+  out[3] = (uint8_t)((v >> 24) & 0xFF);
+}
+
 void setAllSpeed(int s) {
-  motor_1.setSpeed(s); motor_2.setSpeed(s);
-  motor_3.setSpeed(s); motor_4.setSpeed(s);
+  motor_1.setSpeed(s);
+  motor_2.setSpeed(s);
+  motor_3.setSpeed(s);
+  motor_4.setSpeed(s);
 }
 
 void allForward() {
-  motor_1.run(FORWARD); motor_2.run(FORWARD);
-  motor_3.run(FORWARD); motor_4.run(FORWARD);
+  motor_1.run(BACKWARD);
+  motor_2.run(BACKWARD);
+  motor_3.run(BACKWARD);
+  motor_4.run(BACKWARD);
 }
 
 void allBackward() {
-  motor_1.run(BACKWARD); motor_2.run(BACKWARD);
-  motor_3.run(BACKWARD); motor_4.run(BACKWARD);
+  motor_1.run(FORWARD);
+  motor_2.run(FORWARD);
+  motor_3.run(FORWARD);
+  motor_4.run(FORWARD);
 }
 
 void startTurnLeft() {
-  motor_1.run(FORWARD); motor_4.run(FORWARD);
-  motor_2.run(BACKWARD); motor_3.run(BACKWARD);
+  motor_1.run(FORWARD);
+  motor_4.run(FORWARD);
+  motor_2.run(BACKWARD);
+  motor_3.run(BACKWARD);
 }
 
 void startTurnRight() {
-  motor_1.run(BACKWARD); motor_4.run(BACKWARD);
-  motor_2.run(FORWARD); motor_3.run(FORWARD);
+  motor_1.run(BACKWARD);
+  motor_4.run(BACKWARD);
+  motor_2.run(FORWARD);
+  motor_3.run(FORWARD);
 }
 
 void allStop() {
-  motor_1.run(RELEASE); motor_2.run(RELEASE);
-  motor_3.run(RELEASE); motor_4.run(RELEASE);
+  motor_1.run(RELEASE);
+  motor_2.run(RELEASE);
+  motor_3.run(RELEASE);
+  motor_4.run(RELEASE);
 }
