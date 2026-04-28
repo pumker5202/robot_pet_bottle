@@ -1,0 +1,119 @@
+#include <Wire.h>
+#include <AFMotor.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+
+#define SLAVE_ADDR 0x08
+
+AF_DCMotor motors[4] = {AF_DCMotor(1), AF_DCMotor(2), AF_DCMotor(3), AF_DCMotor(4)};
+const uint8_t ENC_PINS[4] = {A0, A1, A2, A3};
+volatile int32_t enc_counts[4] = {0, 0, 0, 0};
+uint8_t enc_last[4] = {0, 0, 0, 0};
+
+Adafruit_MPU6050 mpu;
+bool mpu_ready = false;
+volatile char lastCmd = 'S';
+volatile uint32_t lastCmdMs = 0;
+
+float yaw = 0.0;          
+float gyroZOffset = 0.0;  
+unsigned long lastTime = 0;
+
+void setup() {
+  // [수정] 전원 안정화를 위해 1초 대기
+  delay(1000); 
+
+  // [중요] I2C 핀 내부 풀업 비활성화 (라즈베리파이와 충돌 방지)
+  pinMode(A4, INPUT); 
+  pinMode(A5, INPUT);
+
+  Wire.begin(SLAVE_ADDR);
+  Wire.onReceive(receiveEvent);
+  Wire.onRequest(requestEvent);
+  Wire.setClock(100000); 
+
+  Serial.begin(115200);
+  Serial.println("Robot Start!");
+
+  for(int i=0; i<4; i++) {
+    pinMode(ENC_PINS[i], INPUT_PULLUP);
+    enc_last[i] = digitalRead(ENC_PINS[i]);
+  }
+
+  if (!mpu.begin()) {
+    Serial.println("MPU6050 Fail");
+    mpu_ready = false;
+  } else {
+    Serial.println("MPU6050 OK! Calibrating...");
+    mpu_ready = true;
+    // 교정 시 샘플링을 늘려 더 정밀하게 잡음
+    for(int i=0; i<200; i++) {
+      sensors_event_t a, g, temp;
+      mpu.getEvent(&a, &g, &temp);
+      gyroZOffset += g.gyro.z;
+      delay(5);
+    }
+    gyroZOffset /= 200.0;
+    Serial.println("Calib Done!");
+  }
+
+  for(int i=0; i<4; i++) motors[i].setSpeed(180); 
+  lastTime = millis();
+}
+
+void loop() {
+  // 엔코더 체크
+  for(int i=0; i<4; i++) {
+    uint8_t s = digitalRead(ENC_PINS[i]);
+    if (s != enc_last[i]) {
+      enc_last[i] = s;
+      enc_counts[i] += (lastCmd == 'B') ? -1 : 1;
+    }
+  }
+
+  // MPU6050 각도 계산
+  if (mpu_ready) {
+    sensors_event_t a, g, temp;
+    if (mpu.getEvent(&a, &g, &temp)) {
+      unsigned long now = millis();
+      float dt = (now - lastTime) / 1000.0;
+      if (dt > 0.5) dt = 0.0; // 시간 튀는 현상 방지
+      lastTime = now;
+      
+      float gz = g.gyro.z - gyroZOffset;
+      // [수정] 테스트를 위해 필터를 아예 끄고 누적함
+      yaw += gz * dt;
+    }
+  }
+
+  if (millis() - lastCmdMs > 500) lastCmd = 'S';
+  executeMotorCommand(lastCmd);
+}
+
+void requestEvent() {
+  uint8_t buf[20];
+  memcpy(&buf[0], (const void*)enc_counts, 16);
+  memcpy(&buf[16], (const void*)&yaw, 4);
+  Wire.write(buf, 20);
+}
+
+void receiveEvent(int howMany) {
+  if (Wire.available()) {
+    lastCmd = (char)Wire.read();
+    lastCmdMs = millis();
+  }
+}
+
+void executeMotorCommand(char cmd) {
+  if (cmd == 'F') { for(int i=0; i<4; i++) motors[i].run(FORWARD); }
+  else if (cmd == 'B') { for(int i=0; i<4; i++) motors[i].run(BACKWARD); }
+  else if (cmd == 'L') {
+    motors[0].run(BACKWARD); motors[3].run(BACKWARD);
+    motors[1].run(FORWARD);  motors[2].run(FORWARD);
+  }
+  else if (cmd == 'R') {
+    motors[0].run(FORWARD);  motors[3].run(FORWARD);
+    motors[1].run(BACKWARD); motors[2].run(BACKWARD);
+  }
+  else { for(int i=0; i<4; i++) motors[i].run(RELEASE); }
+}
