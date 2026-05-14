@@ -1,0 +1,9 @@
+# 라즈베리파이 추론·웹캠만 (학습/Roboflow 없음)
+# torch/torchvision 은 Pi용으로 먼저 설치한 뒤 나머지:
+#   pip install -r requirements-rpi-infer.txt
+numpy==1.24.4
+pillow==10.4.0
+requests==2.32.4
+opencv-python-headless==4.10.0.84
+ultralytics==8.4.21
+flask==3.0.3

@@ -11,6 +11,9 @@ AI Hub(행동 데이터) + Roboflow(물병) 혼합 **CNN 분류 학습**, 추론
 | `scripts/webcam_infer_server.py` | Flask 웹 UI + MJPEG 스트림 + YOLO 박스 |
 | `requirements.txt` | x86_64 개발 PC 기준 고정 버전 |
 | `requirements-rpi.txt` | 라즈베리파이용 (CPU torch, 동일 앱 버전) |
+| `requirements-rpi-infer.txt` | 라즈베리파이 추론 서버용 최소 패키지 |
+| `ros2_sllidar_reference/` | ROS2 라이다 실행 파일과 설명 문서 |
+| `ros2_sllidar_with_sdk/` | SLLidar SDK까지 포함한 ROS2 업로드용 폴더 |
 
 ## Python / 라이브러리 버전 (개발 PC 기준)
 
@@ -115,6 +118,66 @@ MJPEG: `/stream`, `/video_feed`
 4. 웹: 느리면 `--no-yolo`
 
 PyTorch ARM: [pytorch.org](https://pytorch.org/get-started/locally/) 또는 [piwheels](https://www.piwheels.org/project/torch/).
+
+## ROS2 SLLidar 예제
+
+라즈베리파이에서 실제로 실행한 라이다 프로그램도 함께 정리했습니다. 실행 기준 명령은 아래와 같습니다.
+
+```bash
+ros2 launch slampibot_robot slam_robot.launch.py
+```
+
+현재는 두 가지 폴더가 있습니다.
+
+- `ros2_sllidar_reference/`
+  - 문서와 예제 파일 위주로 정리한 참고용 폴더
+  - SDK 전체 소스는 포함하지 않음
+- `ros2_sllidar_with_sdk/`
+  - 참고용 파일에 더해 `slampibot_robot/sdk/` 전체를 같이 넣은 업로드용 폴더
+  - 별도 SDK 복사 없이 바로 ROS2 워크스페이스에 넣어 빌드 가능
+
+문서에는 아래 내용이 포함되어 있습니다.
+
+- 현재 launch 파일이 실제로 무엇을 실행하는지
+- 어떤 코드가 `/scan` 토픽을 퍼블리시하는지
+- 필요한 ROS2/Ubuntu 패키지
+- 워크스페이스에 복사해서 빌드하는 방법
+- 확인용 토픽/TF 명령어
+
+### ROS2 설치 예시
+
+Ubuntu 22.04 + ROS2 Humble 기준:
+
+```bash
+sudo apt update
+sudo apt install -y build-essential cmake git python3-colcon-common-extensions
+sudo apt install -y ros-humble-ros-base
+sudo apt install -y \
+  ros-humble-rclcpp \
+  ros-humble-sensor-msgs \
+  ros-humble-std-srvs \
+  ros-humble-tf2-ros \
+  ros-humble-ros2launch
+```
+
+### 동작 요약
+
+- `slampibot_robot/launch/slam_robot.launch.py`
+  - `sllidar_node`와 `static_transform_publisher`를 함께 실행
+- `slampibot_robot/src/sllidar_node.cpp`
+  - SLLidar SDK에서 스캔 데이터를 읽어 `/scan` 토픽으로 퍼블리시
+- `tf2_ros/static_transform_publisher`
+  - `base_link -> laser` 정적 TF를 발행
+
+즉, 이 launch는 SLAM 전체가 아니라 "라이다 드라이버 + 정적 TF" 단계까지 담당합니다.
+
+### 실행 후 확인
+
+```bash
+ros2 topic list
+ros2 topic echo /scan --once
+ros2 run tf2_ros tf2_echo base_link laser
+```
 
 ## GitHub
 
